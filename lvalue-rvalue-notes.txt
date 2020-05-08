@@ -1,0 +1,94 @@
+
+NOTE: in the Lua grammar (based on staring at it for a while):
+    "var" is all valid lvalues
+    "prefixexp" is a superset of that which includes things like func() that aren't themselves lvalues, but can be part of one if you follow it up with "[exp]" or ".name"
+
+
+Read LRvalue
+    Reads a prefixexp or var (you can't really know which one until you reach the end) and tells you which one it can be.
+    Also reads trailing whitespace because obviously it has to.
+    Note: if the caller wants to exclude rvalues, they should ensure that the first character looks like a name
+        (in particular, that it's not a "(" ) in addition to checking for "rvalue" on the stack afterward
+
+    Let a "part" be one of the following things following a name or another part:
+        [expression]
+        .name
+        :name (args)
+        :name 'string argument' or [[string argument]] or [==[string argument]==]
+        :name {table constructor argument}
+        (args)
+        'string argument' or [[string argument]] or [==[string argument]==]
+        {table constructor argument}
+    You can basically chain those as much as you want. If you end with either of the first two, the thing as a whole is a valid lvalue, otherwise it can only be an rvalue. 
+
+
+    Entry point 1: nothing has been read yet
+        Use case: "(exp).a.b.c = 5;"
+    Entry point 2: a name has already been read
+        Use case: we started parsing a statement and read a name/keyword and found it to be a name
+
+    Exit 1: finished reading
+        Stack value: "lvalue_or_rvalue" or "rvalue"
+    Exit 2: same as above but already read a "-"
+        Use case: "a = x.y.z - 3" vs "a = x.y.z -- comment"
+    Exit 3: the first "name" was actually a keyword
+        (nothing on stack since this is neither an lvalue nor rvalue)
+        Use case: "function a() return end"
+        return reads an expression, expression reads an lrvalue list, lrvalue list reads lrvalue, lrvalue sees "end"
+
+    Random things that optionally need to be kept track of, for specific reasons:
+    - Whether the LRvalue was precisely one name vs anything else.
+      This is needed so that the expression parser can keep track of the same.
+      And that, in turn, is needed for table constructor field parsing, to
+      distinguish the "field ::= exp" field format from the
+      "field ::= Name = exp" format.
+    - Whether the final part was a function call.
+      This is needed so that the statement parser can check if a lone LRvalue
+      is a valid statement or not.
+
+    Entry point 1
+        Check first character.
+        Looks like a name or keyword?
+            Read name or keyword.
+            Is name?
+                (This is equivalent to entry point 2 now.)
+                Initialize stack values to "lvalue_or_rvalue", "only_name", and "not_function_call".
+                Read next part.
+            Is keyword?
+                Take appropriate exit.
+        "("?
+            This is "( expression )".
+            Read an expression, and then ")".
+            Initialize stack values to "rvalue", "not_only_name", and "not_function_call".
+            Read next part.
+
+    Entry point 2
+        Initialize stack values to "lvalue_or_rvalue", "only_name", and "not_function_call".
+        Read next part.
+
+    "Read next part"
+        Read whitespace.
+        Check next character.
+            "(" or "{" or single quote or double quote?
+                This is a function call.
+                Read arguments (expression list OR table OR string).
+                Replace stack values with "rvalue", "not_only_name", and "function_call".
+                Read next part.
+            "["?
+                Either a function call (long-form string) or indexing.
+                Consume it in order to check the next character.
+                "[" or "="?
+                    Handle as a function call starting with a long-form string.
+                Anything else?
+                    This is indexing. Read expression and then "]".
+                    Replace stack values with "lvalue_or_rvalue", "not_only_name", and "not_function_call".
+                    Read next part.
+            "."?
+                This is member lookup.
+                Replace stack values with "lvalue_or_rvalue", "not_only_name", and "not_function_call".
+                Read next part.
+            ":"
+                This is a function call.
+                Read a name, and then handle as a function call
+            Anything else?
+                That's the end. Take appropriate exit.
